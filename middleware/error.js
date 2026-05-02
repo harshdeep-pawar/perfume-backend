@@ -9,6 +9,8 @@
  * - ValidationError (Mongoose validation)
  * - Duplicate key errors (MongoDB code 11000)
  * - JWT errors (invalid/expired tokens)
+ * - Multer errors (file upload limits)
+ * - Razorpay errors (payment gateway)
  */
 
 const ApiError = require('../utils/apiError');
@@ -67,6 +69,38 @@ const errorMiddleware = (err, req, res, next) => {
   if (err.name === 'TokenExpiredError') {
     const message = 'Token has expired. Please log in again.';
     error = new ApiError(message, 401);
+  }
+
+  // Multer: File upload errors
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    const message = 'File too large. Maximum size is 5MB.';
+    error = new ApiError(message, 400);
+  }
+
+  if (err.code === 'LIMIT_FILE_COUNT') {
+    const message = 'Too many files. Maximum 5 files allowed.';
+    error = new ApiError(message, 400);
+  }
+
+  if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+    const message = 'Unexpected file field.';
+    error = new ApiError(message, 400);
+  }
+
+  // Razorpay: Payment gateway errors
+  if (err.error && err.error.source === 'gateway') {
+    const message = 'Payment gateway error. Please try again.';
+    error = new ApiError(message, 502);
+  }
+
+  // Razorpay: Bad request errors
+  if (err.statusCode === 400 && err.error && err.error.description) {
+    error = new ApiError(err.error.description, 400);
+  }
+
+  // Syntax Error (malformed JSON)
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    error = new ApiError('Invalid JSON in request body.', 400);
   }
 
   res.status(error.statusCode || 500).json({

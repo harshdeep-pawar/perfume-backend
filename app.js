@@ -6,26 +6,25 @@
  * Middleware Stack (order matters):
  * 1. Security headers (Helmet)
  * 2. CORS
- * 3. Rate limiting
- * 4. Body parsing (JSON + URL-encoded)
- * 5. Cookie parsing
- * 6. HTTP request logging (Morgan)
- * 7. API Routes
- * 8. Swagger Documentation
- * 9. Global Error Handler
+ * 3. Body parsing (JSON + URL-encoded)
+ * 4. Cookie parsing
+ * 5. HTTP request logging (Morgan)
+ * 6. API Routes (with granular rate limiting)
+ * 7. Swagger Documentation
+ * 8. Global Error Handler
  */
 
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const swaggerUi = require('swagger-ui-express');
 
 // Internal imports
 const swaggerSpec = require('./config/swagger');
 const errorMiddleware = require('./middleware/error');
+const { authLimiter, paymentLimiter, apiLimiter } = require('./middleware/rateLimiter');
 const ApiError = require('./utils/apiError');
 const logger = require('./utils/logger');
 
@@ -35,6 +34,7 @@ const productRoutes = require('./routes/productRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 // Initialize Express app
 const app = express();
@@ -55,20 +55,6 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
-
-// Rate limiting - prevent brute-force attacks
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // Limit per IP
-  message: {
-    success: false,
-    message: 'Too many requests from this IP. Please try again after 15 minutes.',
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use('/api', limiter);
 
 // ==========================================
 // BODY PARSING MIDDLEWARE
@@ -101,6 +87,20 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // ==========================================
+// RATE LIMITING (Granular per route group)
+// ==========================================
+
+// General API rate limiter
+app.use('/api', apiLimiter);
+
+// Strict rate limiting for auth endpoints
+app.use('/api/v1/auth/login', authLimiter);
+app.use('/api/v1/auth/register', authLimiter);
+
+// Moderate rate limiting for payment endpoints
+app.use('/api/v1/payments', paymentLimiter);
+
+// ==========================================
 // API ROUTES
 // ==========================================
 
@@ -120,6 +120,7 @@ app.use('/api/v1/products', productRoutes);
 app.use('/api/v1/cart', cartRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
+app.use('/api/v1/payments', paymentRoutes);
 
 // ==========================================
 // API DOCUMENTATION (Swagger)

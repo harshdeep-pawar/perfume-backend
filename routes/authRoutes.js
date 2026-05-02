@@ -21,6 +21,7 @@ const {
   getUserById,
   updateUserRole,
   deleteUser,
+  promoteToAdmin,
 } = require('../controllers/authController');
 
 // Middleware
@@ -64,7 +65,7 @@ const validate = require('../validations/validate');
  *       400:
  *         description: Validation error or user already exists
  */
-router.post('/register', register);
+router.post('/register', registerValidation, validate, register);
 
 /**
  * @swagger
@@ -93,7 +94,7 @@ router.post('/register', register);
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', login);
+router.post('/login', loginValidation, validate, login);
 
 // ==========================================
 // PROTECTED ROUTES (Authenticated Users)
@@ -170,6 +171,31 @@ router.put('/me/password', isAuthenticated, updatePassword);
  *         description: Logged out successfully
  */
 router.post('/logout', isAuthenticated, logout);
+
+/**
+ * @swagger
+ * /api/v1/auth/promote-admin:
+ *   post:
+ *     summary: Promote current user to admin (requires setup key)
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [setupKey]
+ *             properties:
+ *               setupKey:
+ *                 type: string
+ *                 description: Server-side ADMIN_SETUP_KEY from .env
+ *     responses:
+ *       200:
+ *         description: User promoted to admin
+ *       403:
+ *         description: Invalid setup key
+ */
+router.post('/promote-admin', isAuthenticated, promoteToAdmin);
 
 // ==========================================
 // ADMIN ROUTES

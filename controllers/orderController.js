@@ -4,12 +4,17 @@
  * Handles order creation, retrieval, and status management.
  *
  * Endpoints:
- * POST   /api/v1/orders              - Create new order
+ * POST   /api/v1/orders              - Create order (from body items)
+ * POST   /api/v1/orders/from-cart     - Create order from user's cart
  * GET    /api/v1/orders/me            - Get user's order history
  * GET    /api/v1/orders/:id           - Get single order
  * GET    /api/v1/orders/admin/all     - Get all orders (Admin)
  * PUT    /api/v1/orders/admin/:id     - Update order status (Admin)
  * DELETE /api/v1/orders/admin/:id     - Delete order (Admin)
+ *
+ * Order Status Flow:
+ * pending → processing → shipped → delivered
+ *                    ↘ cancelled
  */
 
 const Order = require('../models/Order');
@@ -21,14 +26,26 @@ const { calculateOrderPrices, updateStock, restoreStock } = require('../services
 const logger = require('../utils/logger');
 
 /**
- * @desc    Create a new order
+ * Valid order status transitions
+ * Prevents invalid state changes (e.g., shipped → pending)
+ */
+const VALID_STATUS_TRANSITIONS = {
+  pending: ['processing', 'cancelled'],
+  processing: ['shipped', 'cancelled'],
+  shipped: ['delivered'],
+  delivered: [], // Terminal state
+  cancelled: [], // Terminal state
+};
+
+/**
+ * @desc    Create a new order from request body
  * @route   POST /api/v1/orders
  * @access  Private
  *
  * Body: {
  *   orderItems: [{ product: "productId", quantity: 2 }],
  *   shippingAddress: { address, city, state, country, pinCode, phone },
- *   paymentInfo: { method: "cod" }
+ *   paymentInfo: { method: "cod" | "razorpay" }
  * }
  */
 const createOrder = catchAsync(async (req, res, next) => {
@@ -38,7 +55,7 @@ const createOrder = catchAsync(async (req, res, next) => {
     return next(new ApiError('No order items provided.', 400));
   }
 
-  // Validate products and build order items with current prices
+  // Validate products and build order items with current prices (snapshot)
   const validatedItems = [];
   for (const item of orderItems) {
     const product = await Product.findById(item.product);
@@ -68,24 +85,24 @@ const createOrder = catchAsync(async (req, res, next) => {
   // Calculate prices
   const { itemsPrice, taxPrice, shippingPrice, totalPrice } = calculateOrderPrices(validatedItems);
 
-  // Simulate payment (mark as paid for non-COD methods)
-  const payment = {
-    id: paymentInfo?.method === 'cod' ? 'COD' : `SIM_${Date.now()}`,
-    status: paymentInfo?.method === 'cod' ? 'pending' : 'paid',
-    method: paymentInfo?.method || 'cod',
-    paidAt: paymentInfo?.method !== 'cod' ? Date.now() : undefined,
-  };
+  // Determine payment method and initial status
+  const method = paymentInfo?.method || 'cod';
+  const isCOD = method === 'cod';
 
   // Create order
   const order = await Order.create({
     user: req.user.id,
     orderItems: validatedItems,
     shippingAddress,
-    paymentInfo: payment,
+    paymentInfo: {
+      status: isCOD ? 'pending' : 'pending',
+      method,
+    },
     itemsPrice,
     taxPrice,
     shippingPrice,
     totalPrice,
+    orderStatus: isCOD ? 'processing' : 'pending', // COD orders go directly to processing
   });
 
   // Update product stock
@@ -94,11 +111,103 @@ const createOrder = catchAsync(async (req, res, next) => {
   // Clear user's cart after successful order
   await Cart.findOneAndDelete({ user: req.user.id });
 
-  logger.info(`New order created: ${order._id} by user ${req.user.email} - Total: ₹${totalPrice}`);
+  logger.info(`New order created: ${order._id} by user ${req.user.email} - Total: ₹${totalPrice} [${method}]`);
 
   res.status(201).json({
     success: true,
     message: 'Order placed successfully',
+    order,
+  });
+});
+
+/**
+ * @desc    Create order directly from user's cart
+ * @route   POST /api/v1/orders/from-cart
+ * @access  Private
+ *
+ * Body: {
+ *   shippingAddress: { address, city, state, country, pinCode, phone },
+ *   paymentInfo: { method: "cod" | "razorpay" }
+ * }
+ *
+ * Automatically reads all items from the user's cart,
+ * validates stock, creates order, deducts stock, and clears cart.
+ */
+const createOrderFromCart = catchAsync(async (req, res, next) => {
+  const { shippingAddress, paymentInfo } = req.body;
+
+  if (!shippingAddress) {
+    return next(new ApiError('Please provide a shipping address.', 400));
+  }
+
+  // Get user's cart
+  const cart = await Cart.findOne({ user: req.user.id }).populate('items.product', 'name price stock images');
+
+  if (!cart || cart.items.length === 0) {
+    return next(new ApiError('Your cart is empty. Add items before placing an order.', 400));
+  }
+
+  // Validate stock and build order items snapshot
+  const validatedItems = [];
+  for (const cartItem of cart.items) {
+    const product = await Product.findById(cartItem.product);
+
+    if (!product) {
+      return next(new ApiError(`Product "${cartItem.name}" is no longer available.`, 404));
+    }
+
+    if (product.stock < cartItem.quantity) {
+      return next(
+        new ApiError(
+          `Insufficient stock for "${product.name}". Available: ${product.stock}, In cart: ${cartItem.quantity}`,
+          400
+        )
+      );
+    }
+
+    validatedItems.push({
+      product: product._id,
+      name: product.name,
+      price: product.price, // Use current price, not cart price (prevents stale pricing)
+      quantity: cartItem.quantity,
+      image: product.images && product.images.length > 0 ? product.images[0].url : '',
+    });
+  }
+
+  // Calculate prices
+  const { itemsPrice, taxPrice, shippingPrice, totalPrice } = calculateOrderPrices(validatedItems);
+
+  // Determine payment method
+  const method = paymentInfo?.method || 'cod';
+  const isCOD = method === 'cod';
+
+  // Create order
+  const order = await Order.create({
+    user: req.user.id,
+    orderItems: validatedItems,
+    shippingAddress,
+    paymentInfo: {
+      status: 'pending',
+      method,
+    },
+    itemsPrice,
+    taxPrice,
+    shippingPrice,
+    totalPrice,
+    orderStatus: isCOD ? 'processing' : 'pending',
+  });
+
+  // Update product stock
+  await updateStock(validatedItems);
+
+  // Clear cart
+  await Cart.findByIdAndDelete(cart._id);
+
+  logger.info(`Order from cart: ${order._id} by ${req.user.email} - ${validatedItems.length} items - ₹${totalPrice} [${method}]`);
+
+  res.status(201).json({
+    success: true,
+    message: 'Order placed from cart successfully',
     order,
   });
 });
@@ -109,11 +218,23 @@ const createOrder = catchAsync(async (req, res, next) => {
  * @access  Private
  */
 const getMyOrders = catchAsync(async (req, res, next) => {
-  const orders = await Order.find({ user: req.user.id }).sort('-createdAt');
+  // Support pagination
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+  const skip = (page - 1) * limit;
+
+  const totalOrders = await Order.countDocuments({ user: req.user.id });
+  const orders = await Order.find({ user: req.user.id })
+    .sort('-createdAt')
+    .skip(skip)
+    .limit(limit);
 
   res.status(200).json({
     success: true,
     count: orders.length,
+    totalOrders,
+    totalPages: Math.ceil(totalOrders / limit),
+    currentPage: page,
     orders,
   });
 });
@@ -147,17 +268,38 @@ const getOrder = catchAsync(async (req, res, next) => {
  * @access  Private/Admin
  */
 const getAllOrders = catchAsync(async (req, res, next) => {
-  const orders = await Order.find()
+  // Support pagination and filtering
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const skip = (page - 1) * limit;
+
+  // Optional status filter
+  const filter = {};
+  if (req.query.status) {
+    filter.orderStatus = req.query.status;
+  }
+
+  const totalOrders = await Order.countDocuments(filter);
+  const orders = await Order.find(filter)
     .populate('user', 'name email')
-    .sort('-createdAt');
+    .sort('-createdAt')
+    .skip(skip)
+    .limit(limit);
 
   // Calculate total revenue
-  const totalRevenue = orders.reduce((sum, order) => sum + order.totalPrice, 0);
+  const revenueAgg = await Order.aggregate([
+    { $match: { 'paymentInfo.status': 'paid' } },
+    { $group: { _id: null, totalRevenue: { $sum: '$totalPrice' } } },
+  ]);
+  const totalRevenue = revenueAgg.length > 0 ? Math.round(revenueAgg[0].totalRevenue * 100) / 100 : 0;
 
   res.status(200).json({
     success: true,
     count: orders.length,
-    totalRevenue: Math.round(totalRevenue * 100) / 100,
+    totalOrders,
+    totalPages: Math.ceil(totalOrders / limit),
+    currentPage: page,
+    totalRevenue,
     orders,
   });
 });
@@ -167,7 +309,11 @@ const getAllOrders = catchAsync(async (req, res, next) => {
  * @route   PUT /api/v1/orders/admin/:id
  * @access  Private/Admin
  *
- * Body: { status: "shipped" | "delivered" | "cancelled" }
+ * Body: { status: "processing" | "shipped" | "delivered" | "cancelled" }
+ *
+ * Enforces valid status transitions:
+ * pending → processing → shipped → delivered
+ *                    ↘ cancelled
  */
 const updateOrderStatus = catchAsync(async (req, res, next) => {
   const { status } = req.body;
@@ -178,17 +324,19 @@ const updateOrderStatus = catchAsync(async (req, res, next) => {
     return next(new ApiError(`Order not found with ID: ${req.params.id}`, 404));
   }
 
-  // Prevent updating already delivered orders
-  if (order.orderStatus === 'delivered') {
-    return next(new ApiError('This order has already been delivered.', 400));
+  // Validate status transition
+  const allowedTransitions = VALID_STATUS_TRANSITIONS[order.orderStatus];
+
+  if (!allowedTransitions || !allowedTransitions.includes(status)) {
+    return next(
+      new ApiError(
+        `Invalid status transition: "${order.orderStatus}" → "${status}". Allowed: [${allowedTransitions?.join(', ') || 'none'}]`,
+        400
+      )
+    );
   }
 
-  // Prevent updating cancelled orders
-  if (order.orderStatus === 'cancelled') {
-    return next(new ApiError('This order has been cancelled and cannot be updated.', 400));
-  }
-
-  // Handle cancellation - restore stock
+  // Handle cancellation — restore stock
   if (status === 'cancelled') {
     await restoreStock(order.orderItems);
     logger.info(`Order cancelled and stock restored: ${order._id}`);
@@ -197,7 +345,7 @@ const updateOrderStatus = catchAsync(async (req, res, next) => {
   // Update status
   order.orderStatus = status;
 
-  // Set delivered date
+  // Set delivered date and mark payment as paid
   if (status === 'delivered') {
     order.deliveredAt = Date.now();
     order.paymentInfo.status = 'paid';
@@ -239,6 +387,7 @@ const deleteOrder = catchAsync(async (req, res, next) => {
 
 module.exports = {
   createOrder,
+  createOrderFromCart,
   getMyOrders,
   getOrder,
   getAllOrders,

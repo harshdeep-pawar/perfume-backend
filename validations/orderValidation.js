@@ -1,32 +1,16 @@
 /**
  * Order Validators
  * ----------------
- * Input validation rules for order creation.
+ * Input validation rules for order creation and status updates.
  * Uses express-validator for server-side validation.
  */
 
 const { body } = require('express-validator');
 
 /**
- * Validation rules for creating an order
+ * Shared shipping address validation rules
  */
-const createOrderValidation = [
-  body('orderItems')
-    .isArray({ min: 1 })
-    .withMessage('Order must contain at least one item'),
-
-  body('orderItems.*.product')
-    .notEmpty()
-    .withMessage('Product ID is required for each order item')
-    .isMongoId()
-    .withMessage('Invalid product ID'),
-
-  body('orderItems.*.quantity')
-    .notEmpty()
-    .withMessage('Quantity is required')
-    .isInt({ min: 1 })
-    .withMessage('Quantity must be at least 1'),
-
+const shippingAddressValidation = [
   body('shippingAddress.address')
     .trim()
     .notEmpty()
@@ -59,11 +43,47 @@ const createOrderValidation = [
     .withMessage('Phone number is required')
     .isLength({ min: 10, max: 15 })
     .withMessage('Phone number must be between 10 and 15 digits'),
+];
+
+/**
+ * Validation rules for creating an order (from body items)
+ */
+const createOrderValidation = [
+  body('orderItems')
+    .isArray({ min: 1 })
+    .withMessage('Order must contain at least one item'),
+
+  body('orderItems.*.product')
+    .notEmpty()
+    .withMessage('Product ID is required for each order item')
+    .isMongoId()
+    .withMessage('Invalid product ID'),
+
+  body('orderItems.*.quantity')
+    .notEmpty()
+    .withMessage('Quantity is required')
+    .isInt({ min: 1 })
+    .withMessage('Quantity must be at least 1'),
+
+  ...shippingAddressValidation,
 
   body('paymentInfo.method')
     .optional()
-    .isIn(['card', 'upi', 'cod', 'netbanking'])
-    .withMessage('Invalid payment method'),
+    .isIn(['razorpay', 'cod'])
+    .withMessage('Invalid payment method. Use "razorpay" or "cod"'),
+];
+
+/**
+ * Validation rules for creating an order from cart
+ * (no orderItems needed — they come from the cart)
+ */
+const createOrderFromCartValidation = [
+  ...shippingAddressValidation,
+
+  body('paymentInfo.method')
+    .optional()
+    .isIn(['razorpay', 'cod'])
+    .withMessage('Invalid payment method. Use "razorpay" or "cod"'),
 ];
 
 /**
@@ -73,8 +93,12 @@ const updateOrderStatusValidation = [
   body('status')
     .notEmpty()
     .withMessage('Order status is required')
-    .isIn(['processing', 'shipped', 'delivered', 'cancelled'])
+    .isIn(['pending', 'processing', 'shipped', 'delivered', 'cancelled'])
     .withMessage('Invalid order status'),
 ];
 
-module.exports = { createOrderValidation, updateOrderStatusValidation };
+module.exports = {
+  createOrderValidation,
+  createOrderFromCartValidation,
+  updateOrderStatusValidation,
+};

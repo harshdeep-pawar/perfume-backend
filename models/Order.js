@@ -5,9 +5,9 @@
  *
  * Features:
  * - Shipping address information
- * - Multiple ordered items with product references
- * - Payment tracking (simulated)
- * - Order status workflow (processing → shipped → delivered)
+ * - Multiple ordered items with product references (snapshot)
+ * - Razorpay payment integration
+ * - Order status workflow (pending → processing → shipped → delivered)
  * - Price breakdown (items, tax, shipping, total)
  */
 
@@ -74,9 +74,14 @@ const orderSchema = new mongoose.Schema(
       },
     },
     paymentInfo: {
-      id: {
+      razorpayOrderId: {
         type: String,
-        default: 'SIMULATED',
+      },
+      razorpayPaymentId: {
+        type: String,
+      },
+      razorpaySignature: {
+        type: String,
       },
       status: {
         type: String,
@@ -85,7 +90,7 @@ const orderSchema = new mongoose.Schema(
       },
       method: {
         type: String,
-        enum: ['card', 'upi', 'cod', 'netbanking'],
+        enum: ['razorpay', 'cod'],
         default: 'cod',
       },
       paidAt: {
@@ -115,10 +120,10 @@ const orderSchema = new mongoose.Schema(
     orderStatus: {
       type: String,
       enum: {
-        values: ['processing', 'shipped', 'delivered', 'cancelled'],
+        values: ['pending', 'processing', 'shipped', 'delivered', 'cancelled'],
         message: 'Invalid order status',
       },
-      default: 'processing',
+      default: 'pending',
     },
     deliveredAt: {
       type: Date,
@@ -132,6 +137,7 @@ const orderSchema = new mongoose.Schema(
 // Index for efficient querying
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ orderStatus: 1 });
+orderSchema.index({ 'paymentInfo.razorpayOrderId': 1 });
 
 const Order = mongoose.model('Order', orderSchema);
 

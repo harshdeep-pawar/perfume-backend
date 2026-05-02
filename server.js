@@ -5,8 +5,9 @@
  * 1. Loads environment variables
  * 2. Connects to MongoDB
  * 3. Configures Cloudinary
- * 4. Starts Express server
- * 5. Handles unhandled rejections and uncaught exceptions
+ * 4. Initializes Razorpay
+ * 5. Starts Express server
+ * 6. Handles unhandled rejections and uncaught exceptions
  */
 
 // Load environment variables FIRST (before any other imports)
@@ -15,6 +16,7 @@ require('dotenv').config();
 const app = require('./app');
 const connectDB = require('./config/db');
 const { connectCloudinary } = require('./config/cloudinary');
+const { initRazorpay } = require('./config/razorpay');
 const logger = require('./utils/logger');
 
 // ==========================================
@@ -42,11 +44,15 @@ const startServer = async () => {
     // 2. Configure Cloudinary
     connectCloudinary();
 
-    // 3. Start Express server
+    // 3. Initialize Razorpay
+    initRazorpay();
+
+    // 4. Start Express server
     const server = app.listen(PORT, () => {
       logger.info(`🚀 Server running in ${NODE_ENV} mode on port ${PORT}`);
       logger.info(`📚 API Docs available at http://localhost:${PORT}/api-docs`);
-      logger.info(`❤️  Health check: http://localhost:${PORT}/api/v1/health`);
+      logger.info(`❤️ Health check: http://localhost:${PORT}/api/v1/health`);
+      logger.info(`💳 Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not configured'}`);
     });
 
     // ==========================================

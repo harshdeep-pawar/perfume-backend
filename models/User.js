@@ -1,15 +1,3 @@
-/**
- * User Model
- * ----------
- * Defines the User schema for authentication and authorization.
- *
- * Features:
- * - Email uniqueness validation
- * - Password hashing with bcrypt (pre-save hook)
- * - Password comparison method
- * - Role-based access (admin/user)
- */
-
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -36,47 +24,39 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Please provide a password'],
       minlength: [6, 'Password must be at least 6 characters'],
-      select: false, // Don't include password in queries by default
+      select: false, // Prevents accidental exposure of hashed passwords in queries
     },
     role: {
       type: String,
-      enum: {
-        values: ['user', 'admin'],
-        message: 'Role must be either user or admin',
-      },
+      enum: ['user', 'admin'],
       default: 'user',
     },
   },
   {
-    timestamps: true, // Adds createdAt and updatedAt automatically
+    timestamps: true, // Automatically manages createdAt and updatedAt
   }
 );
 
 /**
- * Pre-save hook: Hash password before saving
- * Only runs when password field is modified (not on every save)
+ * Pre-save Mongoose Hook: Hash password before saving
+ * Only hashes if the user is new or the password field was modified.
+ *
+ * IMPORTANT: When using an async function, Mongoose does NOT pass `next`.
+ * Simply return (or throw) — Mongoose awaits the returned promise internally.
+ * Using `next()` inside an async hook causes "next is not a function".
  */
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
 
-  try {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
+  const salt = await bcrypt.genSalt(12); // Industry standard (10-12 rounds)
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 /**
- * Instance method: Compare entered password with stored hashed password
- * @param {string} enteredPassword - Plain text password from login
- * @returns {boolean} Whether passwords match
+ * Instance Method: Compare entered plain text password with stored bcrypt hash
  */
 userSchema.methods.comparePassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-const User = mongoose.model('User', userSchema);
-
-module.exports = User;
+module.exports = mongoose.model('User', userSchema);
